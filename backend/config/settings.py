@@ -1,40 +1,56 @@
 """
-Django settings — development + production.
+Django settings — works identically in local development and on Render/production.
 
-All environment-specific values are read from environment variables so the
-same codebase runs locally (with .env defaults) and on Render without any
-code changes.
+HOW ENV VARS ARE LOADED
+───────────────────────
+• Locally  : create backend/.env (copy from backend/.env.example).
+             python-dotenv loads it automatically at startup.
+• On Render: set vars directly in the Render dashboard → Environment tab.
+             No .env file is needed or used on the server.
 
-Quick reference — env vars you MUST set on Render:
-  SECRET_KEY            → any long random string
-  DEBUG                 → False
-  ALLOWED_HOSTS         → your-app.onrender.com
-  CORS_ALLOWED_ORIGINS  → https://your-app.vercel.app
-  FRONTEND_URL          → https://your-app.vercel.app
-  EMAIL_HOST_USER       → your-gmail@gmail.com
-  EMAIL_HOST_PASSWORD   → your-gmail-app-password
+REQUIRED ENV VARS ON RENDER
+────────────────────────────
+  SECRET_KEY            long random string (Render can auto-generate)
+  DEBUG                 False
+  ALLOWED_HOSTS         auth-system-2-zk0x.onrender.com
+  CORS_ALLOWED_ORIGINS  https://auth-system-yp4o.vercel.app
+  FRONTEND_URL          https://auth-system-yp4o.vercel.app
+  EMAIL_HOST_USER       your-gmail@gmail.com
+  EMAIL_HOST_PASSWORD   16-char Gmail App Password
 """
 
+import logging
 import os
 from datetime import timedelta
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
+# ── Load .env file for local development ─────────────────────────────────────
+# On Render, real env vars are set in the dashboard — this block is a no-op.
+# Locally, create backend/.env (see backend/.env.example) with your credentials.
+try:
+    from dotenv import load_dotenv
+    _env_file = BASE_DIR / '.env'
+    if _env_file.exists():
+        load_dotenv(_env_file)
+except ImportError:
+    pass   # python-dotenv not installed; rely on real environment variables
 
-# ── Security ──────────────────────────────────────────────────────────────────
+
+# ── Core security ─────────────────────────────────────────────────────────────
 
 SECRET_KEY = os.environ.get(
     'SECRET_KEY',
-    'django-insecure-dev-only-key-REPLACE-BEFORE-DEPLOYING-xyz123',
+    'django-insecure-dev-only-REPLACE-BEFORE-DEPLOYING-xyz123abc',
 )
 
-# Set DEBUG=False on Render. Defaults to True for local dev.
+# Locally: True (default).  On Render: set DEBUG=False env var.
 DEBUG = os.environ.get('DEBUG', 'True') == 'True'
 
-# Comma-separated list of allowed hostnames.
-# Local default: localhost + 127.0.0.1
-# Render: set to "your-app.onrender.com" (no scheme, no trailing slash)
+# Comma-separated hostnames — no scheme, no trailing slash.
+# Local default  : localhost,127.0.0.1
+# Render env var : auth-system-2-zk0x.onrender.com
 ALLOWED_HOSTS = [
     h.strip()
     for h in os.environ.get('ALLOWED_HOSTS', 'localhost,127.0.0.1').split(',')
@@ -42,9 +58,9 @@ ALLOWED_HOSTS = [
 ]
 
 
-# ── HTTPS / Security Headers (auto-enabled when DEBUG=False) ──────────────────
-# Render terminates SSL at its load balancer and forwards requests over HTTP,
-# so we trust the X-Forwarded-Proto header it injects.
+# ── HTTPS / Security headers (auto-enabled in production) ────────────────────
+# Render's load-balancer terminates TLS and forwards plain HTTP with an
+# X-Forwarded-Proto: https header — we trust that header here.
 
 if not DEBUG:
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
@@ -54,7 +70,7 @@ if not DEBUG:
     SECURE_BROWSER_XSS_FILTER = True
     SECURE_CONTENT_TYPE_NOSNIFF = True
     X_FRAME_OPTIONS = 'DENY'
-    SECURE_HSTS_SECONDS = 31536000          # 1 year
+    SECURE_HSTS_SECONDS = 31_536_000        # 1 year
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
 
@@ -76,10 +92,10 @@ INSTALLED_APPS = [
 
 
 # ── Middleware ────────────────────────────────────────────────────────────────
-# Order matters:
-#   1. CorsMiddleware  — must be before CommonMiddleware
-#   2. SecurityMiddleware — must be first Django middleware
-#   3. WhiteNoiseMiddleware — right after SecurityMiddleware to serve static files
+# Ordering is critical:
+#   CorsMiddleware       — must be FIRST (before any response-generating middleware)
+#   SecurityMiddleware   — must be second
+#   WhiteNoiseMiddleware — must be directly after SecurityMiddleware
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
@@ -115,15 +131,9 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # ── Database ──────────────────────────────────────────────────────────────────
-# SQLite is fine for development and demos.
-#
-# ⚠️  RENDER FREE TIER WARNING: Render's free web services use an ephemeral
-# filesystem — the SQLite file is WIPED on every deploy or restart.
-# To persist data on Render you have two options:
-#   Option A (easy):  Add a Render Disk (free tier: 1 GB) mounted at /data,
-#                     then set: 'NAME': '/data/db.sqlite3'
-#   Option B (recommended for production):
-#                     Use Render's managed PostgreSQL and dj-database-url.
+# ⚠ RENDER FREE TIER: the filesystem is ephemeral — SQLite is wiped on every
+#   restart/redeploy. Add a Render Disk (free, 1 GB) mounted at /data and set
+#   DB_PATH=/data/db.sqlite3 to persist your data across deploys.
 
 DATABASES = {
     'default': {
@@ -145,7 +155,7 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 
-# ── Django REST Framework ────────────────────────────────────────────────────
+# ── Django REST Framework ─────────────────────────────────────────────────────
 
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
@@ -154,6 +164,11 @@ REST_FRAMEWORK = {
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
     ),
+    # FIX: custom handler converts ANY uncaught exception to a clean JSON
+    # response instead of Django's HTML error page.  Without this, SMTP
+    # failures (and other unexpected errors) return HTML that the frontend
+    # cannot parse, showing a generic "failed" message to the user.
+    'EXCEPTION_HANDLER': 'accounts.exceptions.custom_exception_handler',
 }
 
 SIMPLE_JWT = {
@@ -164,12 +179,9 @@ SIMPLE_JWT = {
 
 
 # ── CORS ──────────────────────────────────────────────────────────────────────
-# Comma-separated list of allowed frontend origins.
-# Local default: Vite dev server
-# Render env var: https://your-app.vercel.app
-#
-# Example for multiple origins:
-#   CORS_ALLOWED_ORIGINS=https://your-app.vercel.app,https://www.yourdomain.com
+# Comma-separated origins WITH scheme, WITHOUT trailing slash.
+# Local default   : http://localhost:5173,http://127.0.0.1:5173
+# Render env var  : https://auth-system-yp4o.vercel.app
 
 _cors_origins = os.environ.get(
     'CORS_ALLOWED_ORIGINS',
@@ -178,53 +190,72 @@ _cors_origins = os.environ.get(
 CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_origins.split(',') if o.strip()]
 
 
-# ── Static Files (served by WhiteNoise) ───────────────────────────────────────
-# WhiteNoise compresses and fingerprints static files so Django can serve them
-# directly from Render without a separate CDN or S3 bucket.
+# ── Static files (WhiteNoise) ─────────────────────────────────────────────────
 
 STATIC_URL = '/static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
-# Django 4.2+ uses STORAGES dict instead of STATICFILES_STORAGE setting.
+# FIX: Django 4.2+ requires BOTH 'default' and 'staticfiles' keys in STORAGES.
+# Omitting 'default' can raise KeyError when Django accesses the file-storage
+# backend (e.g., during middleware init on some Django 5.x minor versions).
 STORAGES = {
-    'staticfiles': {
+    'default': {                          # media / upload storage
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {                      # static files → served by WhiteNoise
         'BACKEND': 'whitenoise.storage.CompressedManifestStaticFilesStorage',
     },
 }
 
 
-# ── Internationalisation ──────────────────────────────────────────────────────
+# ── Localisation ──────────────────────────────────────────────────────────────
 
 LANGUAGE_CODE = 'en-us'
 TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
-
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
-# ── Email (Gmail SMTP) ────────────────────────────────────────────────────────
-# For local dev you can temporarily switch to the console backend:
-#   EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+# ── Email ─────────────────────────────────────────────────────────────────────
+# ROOT-CAUSE FIX: the previous code always used SMTP even locally where no
+# credentials are set.  That made every register / forgot-password call crash
+# with SMTPAuthenticationError → unhandled 500 → HTML response → frontend
+# shows "Registration failed".
 #
-# In production, set EMAIL_HOST_USER and EMAIL_HOST_PASSWORD on Render.
-# Gmail requires a 16-character App Password (not your account password).
-# Generate one at: https://myaccount.google.com/apppasswords
+# NEW LOGIC:
+#   • If EMAIL_HOST_USER + EMAIL_HOST_PASSWORD are both present → use Gmail SMTP
+#   • Otherwise                                                 → use console backend
+#     (emails are printed to the Django dev-server terminal; no real email sent)
+#
+# This means you can develop and test registration/forgot-password locally
+# WITHOUT configuring SMTP — the activation link will appear in your terminal.
 
-EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
-EMAIL_HOST = 'smtp.gmail.com'
-EMAIL_PORT = 587
-EMAIL_USE_TLS = True
-EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '')
-EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '')
+EMAIL_HOST_USER = os.environ.get('EMAIL_HOST_USER', '').strip()
+EMAIL_HOST_PASSWORD = os.environ.get('EMAIL_HOST_PASSWORD', '').strip()
 
-# Gmail SMTP requires From == authenticated account address.
-DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+if EMAIL_HOST_USER and EMAIL_HOST_PASSWORD:
+    # Production / properly configured local environment
+    EMAIL_BACKEND = 'django.core.mail.backends.smtp.EmailBackend'
+    EMAIL_HOST = 'smtp.gmail.com'
+    EMAIL_PORT = 587
+    EMAIL_USE_TLS = True
+    # Gmail SMTP requires From address == authenticated account.
+    # Using any other address (e.g. noreply@authapp.com) causes rejection.
+    DEFAULT_FROM_EMAIL = EMAIL_HOST_USER
+else:
+    # No SMTP credentials → fall back to console backend.
+    # Activation/reset links are printed to the terminal instead of emailed.
+    EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+    DEFAULT_FROM_EMAIL = 'noreply@authapp.local'
+    logging.warning(
+        'EMAIL_HOST_USER / EMAIL_HOST_PASSWORD not set. '
+        'Falling back to console email backend — emails will appear in the terminal.'
+    )
 
 
 # ── Frontend URL (used in email links) ───────────────────────────────────────
-# This is the URL that appears in activation / password-reset emails.
-# Local default: Vite dev server
-# Render env var: https://your-app.vercel.app  (no trailing slash)
+# Local default   : http://localhost:5173
+# Render env var  : https://auth-system-yp4o.vercel.app  (no trailing slash)
 
-FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+FRONTEND_URL = os.environ.get('FRONTEND_URL', 'http://localhost:5173').rstrip('/')
