@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# render.yaml — Render Infrastructure-as-Code config.
+#
+# HOW TO USE:
+#   1. Push your backend folder to a GitHub repo.
+#   2. On Render → New → Blueprint → point to this file.
+#   3. After the first deploy, copy the generated URL (e.g. auth-api.onrender.com)
+#      and set it in the env vars below + in your Vercel frontend env.
+#
+# ALTERNATIVELY: skip this file and configure the service manually via the
+# Render dashboard (see DEPLOYMENT.md for step-by-step instructions).
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+  - type: web
+    name: auth-backend
+    runtime: python
+    region: oregon          # choose closest region to your users
+    plan: free              # upgrade to "starter" for persistent disk
+
+    buildCommand: bash build.sh
+    startCommand: gunicorn config.wsgi:application --bind 0.0.0.0:$PORT --workers 2 --timeout 120
+
+    healthCheckPath: /admin/   # Render pings this to verify the service is up
+
+    envVars:
+      # Auto-generated secure random string — do NOT change after first deploy
+      # (changing SECRET_KEY invalidates all sessions and JWT tokens)
+      - key: SECRET_KEY
+        generateValue: true
+
+      - key: DEBUG
+        value: "False"
+
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+
+      # Set these AFTER your first deploy once you know the Render URL and
+      # Vercel URL.  Use "sync: false" so Render doesn't wipe manual edits.
+      - key: ALLOWED_HOSTS
+        sync: false          # e.g. auth-backend.onrender.com
+
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false          # e.g. https://auth-frontend.vercel.app
+
+      - key: FRONTEND_URL
+        sync: false          # e.g. https://auth-frontend.vercel.app
+
+      - key: EMAIL_HOST_USER
+        sync: false          # your Gmail address
+
+      - key: EMAIL_HOST_PASSWORD
+        sync: false          # Gmail App Password (16 chars)
