@@ -181,26 +181,56 @@ def activate_account(request, token):
 @api_view(['POST'])
 @permission_classes([AllowAny])
 def forgot_password(request):
+    from django.core.validators import validate_email as django_validate_email
+    from django.core.exceptions import ValidationError as DjangoValidationError
+
     email = request.data.get('email', '').lower().strip()
+
+    # ── 1. Presence check ────────────────────────────────────────────────────
     if not email:
         return Response(
             {'error': 'Email is required.'},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # Always use the same success message — prevents user enumeration
-    # (attacker cannot determine whether an email is registered or not).
-    GENERIC_OK = Response({
-        'message': 'If an account with that email exists, a password reset link has been sent.'
-    })
-
+    # ── 2. Format check (Django's built-in RFC-compliant validator) ──────────
     try:
-        user = CustomUser.objects.get(email=email, is_active=True)
+        django_validate_email(email)
+    except DjangoValidationError:
+        return Response(
+            {'error': 'Invalid email address. Please enter a valid email.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    # ── 3. Account existence check ───────────────────────────────────────────
+    # Unlike the previous generic "if account exists…" response, we now return
+    # a clear NOT-FOUND error so the frontend can redirect the user to /register.
+    try:
+        user = CustomUser.objects.get(email=email)
     except CustomUser.DoesNotExist:
-        return GENERIC_OK
+        return Response(
+            {
+                'error': 'Account not found. Please create an account first.',
+                'code': 'account_not_found',
+            },
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
+    # ── 4. Activation check ──────────────────────────────────────────────────
+    if not user.is_active:
+        return Response(
+            {
+                'error': (
+                    'This account has not been activated yet. '
+                    'Please check your inbox for the activation link.'
+                ),
+                'code': 'account_inactive',
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ── 5. Create reset token ────────────────────────────────────────────────
     try:
-        # Remove any stale tokens from previous reset attempts
         PasswordResetToken.objects.filter(user=user).delete()
         reset_token = PasswordResetToken.objects.create(user=user)
     except Exception as exc:
@@ -210,10 +240,10 @@ def forgot_password(request):
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
+    # ── 6. Send reset email ──────────────────────────────────────────────────
     try:
         send_password_reset_email(user, reset_token.token)
     except Exception as exc:
-        # Email failed — delete the orphaned token so the user can retry cleanly
         logger.exception('forgot_password: email send failed for %s: %s', email, exc)
         try:
             reset_token.delete()
@@ -223,14 +253,15 @@ def forgot_password(request):
             {
                 'error': (
                     'Failed to send the reset email. '
-                    'Please verify your email address and try again, '
-                    'or contact support if the problem persists.'
+                    'Please try again later or contact support.'
                 )
             },
             status=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
 
-    return GENERIC_OK
+    return Response({
+        'message': 'Password reset link sent. Please check your email.',
+    })
 
 
 # ─── Validate Reset Token (GET) ───────────────────────────────────────────────
