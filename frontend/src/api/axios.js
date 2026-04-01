@@ -1,11 +1,35 @@
 import axios from 'axios'
 
-// Read base URL from .env  →  VITE_API_BASE_URL=http://localhost:8000/api
-// Falls back to localhost for development if the variable is not set.
-const BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'
+// ── Build the API base URL ────────────────────────────────────────────────────
+//
+// ROOT-CAUSE FIX:
+// Previously, baseURL was used EXACTLY as provided by the env var, with no
+// normalisation.  This caused two production bugs:
+//
+// Bug 1 — Missing /api suffix:
+//   VITE_API_BASE_URL was set on Vercel as "https://backend.onrender.com"
+//   (without /api), so requests went to /accounts/register/ instead of
+//   /api/accounts/register/.
+//
+// Bug 2 — Trailing-slash duplication:
+//   If the env var ended with "/" and the request path started with "/", the
+//   URL had a double slash in the middle, which some servers reject.
+//
+// FIX: strip any trailing slashes from the base URL, then ensure it ends
+// with /api. All request paths in the codebase already start with "/accounts/…"
+// so the final URL becomes: https://backend.onrender.com/api/accounts/register/
+
+let rawBase = (
+  import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000/api'
+).replace(/\/+$/, '')  // strip trailing slashes
+
+// If someone sets just the domain without /api, append it automatically
+if (!rawBase.endsWith('/api')) {
+  rawBase += '/api'
+}
 
 const api = axios.create({
-  baseURL: BASE_URL,
+  baseURL: rawBase,
   headers: {
     'Content-Type': 'application/json',
   },
